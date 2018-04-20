@@ -179,6 +179,7 @@ component displayName="Preside Object Service" {
 		,          boolean useCache                = _getUseCacheDefault()
 		,          boolean fromVersionTable        = false
 		,          numeric specificVersion         = 0
+		,          numeric maxVersionNumber        = 0
 		,          boolean allowDraftVersions      = $getRequestContext().showNonLiveContent()
 		,          string  forceJoins              = ""
 		,          array   extraJoins              = []
@@ -1262,6 +1263,10 @@ component displayName="Preside Object Service" {
 			args.filter       = "#idField# = :#idField# and _version_changed_fields like :_version_changed_fields";
 			args.filterParams = { "#idField#" = arguments.id, _version_changed_fields = "%,#args.fieldName#,%" };
 			args.delete( "fieldName" );
+			args.delete( "id" );
+		} else if ( listLen( arguments.id ) GT 1 ){
+			args.filter       = "#idField# IN ( :#idField# )";
+			args.filterParams = { "#idField#" = { value = arguments.id, list="yes"} };
 			args.delete( "id" );
 		}
 
@@ -2384,6 +2389,7 @@ component displayName="Preside Object Service" {
 		, required array   joins
 		, required array   selectFields
 		, required numeric specificVersion
+		, required numeric maxVersionNumber
 		, required boolean allowDraftVersions
 		, required any     filter
 		, required array   params
@@ -2420,6 +2426,14 @@ component displayName="Preside Object Service" {
 				params.append( { name="#arguments.objectName#___version_is_draft", value=false, type="cf_sql_bit" } );
 			}
 
+		} else if ( arguments.maxVersionNumber ) {
+			versionFilter = "#arguments.objectName#._version_number <= :#arguments.objectName#._max_version_number";
+			params.append( { name="#arguments.objectName#___max_version_number", value=arguments.maxVersionNumber, type="cf_sql_int" } );
+
+			if ( !arguments.allowDraftVersions ) {
+				versionFilter &= " and ( #arguments.objectName#._version_is_draft is null or #arguments.objectName#._version_is_draft = :#arguments.objectName#._version_is_draft )";
+				params.append( { name="#arguments.objectName#___version_is_draft", value=false, type="cf_sql_bit" } );
+			}
 		} else {
 			var latestVersionField = arguments.allowDraftVersions ? "_version_is_latest_draft" : "_version_is_latest";
 			versionFilter = "#arguments.objectName#.#latestVersionField# = :#arguments.objectName#.#latestVersionField#";
