@@ -11,7 +11,7 @@
 	param name="args.baseUrl"                type="string" default="#event.buildAdminLink( linkTo='datamanager.editRecord'   , queryString='object=#args.object#&id=#args.id#&version=' )#";
 	param name="args.allVersionsUrl"         type="string" default="#event.buildAdminLink( linkTo='datamanager.recordHistory', queryString='object=#args.object#&id=#args.id#' )#";
 	param name="args.discardDraftsUrl"       type="string" default="";
-// writeDump(args);abort;
+
 	objectTitleSingular = translateResource( uri="preside-objects.#args.object#:title.singular", defaultValue="record" );
 
 	if ( args.isDraft ) {
