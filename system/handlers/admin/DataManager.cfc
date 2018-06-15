@@ -51,57 +51,72 @@ component extends="preside.system.base.AdminHandler" {
 		prc.preRenderListing  = ( customizationService.objectHasCustomization( objectName, "preRenderListing"  ) ? customizationService.runCustomization( objectName=objectName, action="preRenderListing"  , args=args ) : "" );
 		prc.postRenderListing = ( customizationService.objectHasCustomization( objectName, "postRenderListing" ) ? customizationService.runCustomization( objectName=objectName, action="postRenderListing" , args=args ) : "" );
 
-		if ( customizationService.objectHasCustomization( objectName, "listingViewlet" ) ) {
-			prc.listingView = customizationService.runCustomization(
-				  objectName = objectName
-				, action     = "listingViewlet"
-				, args       = { objectName=objectName }
-			);
-		} else {
-			args.usesTreeView = dataManagerService.usesTreeView( objectName );
-
-			if ( args.usesTreeView ) {
-				var defaultTab = sessionStorage.getVar( name="_datamanagerTabForObject#objectName#", default="tree" );
-				var actualTab  = rc.tab ?: defaultTab;
-
-				args.treeView = actualTab != "grid";
-				sessionStorage.setVar( "_datamanagerTabForObject#objectName#", actualTab );
-			} else {
-				args.treeView = false;
-			}
-
-			args.append( {
-				  gridFields          = prc.gridFields       ?: _getObjectFieldsForGrid( objectName )
-				, hiddenGridFields    = prc.hiddenGridFields ?: []
+		prc.listingView = customizationService.runCustomization(
+			  objectName     = objectName
+			, action         = "listingViewlet"
+			, defaultHandler = "admin.DataManager._objectListingViewlet"
+			, args           = {
+				  objectName          = objectName
+				, gridFields          = prc.gridFields          ?: _getObjectFieldsForGrid( objectName )
+				, hiddenGridFields    = prc.hiddenGridFields    ?: []
+				, batchEditableFields = prc.batchEditableFields ?: []
 				, isMultilingual      = IsTrue( prc.isMultilingual ?: "" )
 				, draftsEnabled       = IsTrue( prc.draftsEnabled  ?: "" )
+				, canDelete           = IsTrue( prc.canDelete      ?: "" )
+			}
+		);
+	}
+
+	private string function _objectListingViewlet( event, rc, prc, args={} ) {
+		var objectName  = args.objectName ?: "";
+		var listing     = "";
+
+		args.usesTreeView = dataManagerService.usesTreeView( objectName );
+
+		if ( args.usesTreeView ) {
+			var defaultTab = sessionStorage.getVar( name="_datamanagerTabForObject#objectName#", default="tree" );
+			var actualTab  = rc.tab ?: defaultTab;
+
+			args.treeView = actualTab != "grid";
+			sessionStorage.setVar( "_datamanagerTabForObject#objectName#", actualTab );
+		} else {
+			args.treeView = false;
+		}
+
+		args.append( {
+			  gridFields          = args.gridFields          ?: _getObjectFieldsForGrid( objectName )
+			, hiddenGridFields    = args.hiddenGridFields    ?: _getObjectHiddenFieldsForGrid( objectName )
+			, batchEditableFields = args.batchEditableFields ?: dataManagerService.listBatchEditableFields( objectName )
+			, isMultilingual      = IsTrue( args.isMultilingual ?: multilingualPresideObjectService.isMultilingual( objectName ) )
+			, draftsEnabled       = IsTrue( args.draftsEnabled  ?: datamanagerService.areDraftsEnabledForObject( objectName ) )
+			, canDelete           = IsTrue( args.canDelete      ?: _checkPermission( argumentCollection=arguments, object=objectName, key="delete", throwOnError=false ) )
+		} );
+
+		if ( args.treeView ) {
+			listing = renderViewlet( event="admin.datamanager._treeView", args=args );
+
+		} else {
+			args.multiActions = customizationService.runCustomization(
+				  objectName     = objectName
+				, action         = "listingMultiActions"
+				, defaultHandler = "admin.datamanager._listingMultiActions"
+				, args           = args
+			);
+			args.append( {
+				  useMultiActions = args.multiActions.len()
+				, multiActionUrl  = event.buildAdminLink( objectName=objectName, operation="multiRecordAction" )
+				, allowDataExport = true
 			} );
 
-			if ( args.treeView ) {
-				prc.listingView = renderViewlet( event="admin.datamanager._treeView", args=args );
-
-			} else {
-				args.multiActions = customizationService.runCustomization(
-					  objectName     = objectName
-					, action         = "listingMultiActions"
-					, defaultHandler = "admin.datamanager._listingMultiActions"
-					, args           = args
-				);
-				args.append( {
-					  useMultiActions     = args.multiActions.len()
-					, multiActionUrl      = event.buildAdminLink( objectName=objectName, operation="multiRecordAction" )
-					, batchEditableFields = prc.batchEditableFields ?: []
-					, allowDataExport     = true
-				} );
-
-				prc.listingView = renderView( view="/admin/datamanager/_objectDataTable", args=args );
-			}
-
-			if ( args.usesTreeView  ) {
-				args.content = prc.listingView;
-				prc.listingView = renderView( view="/admin/datamanager/_treeGridSwitcher", args=args );
-			}
+			listing = renderView( view="/admin/datamanager/_objectDataTable", args=args );
 		}
+
+		if ( args.usesTreeView  ) {
+			args.content = listing;
+			listing = renderView( view="/admin/datamanager/_treeGridSwitcher", args=args );
+		}
+
+		return listing;
 	}
 
 	private string function _listingMultiActions( event, rc, prc, args={} ) {
@@ -120,14 +135,22 @@ component extends="preside.system.base.AdminHandler" {
 	}
 
 	private array function _getListingMultiActions( event, rc, prc, args={} ) {
-		args.actions = [];
+		var objectName = args.objectName ?: "";
 
-		if ( ArrayLen( prc.batchEditableFields ?: [] ) ) {
-			args.batchEditableFields = prc.batchEditableFields;
+		args.actions             = [];
+		args.batchEditableFields = [];
+
+		if ( objectName == ( prc.objectName ?: "" ) ) {
+			args.batchEditableFields = prc.batchEditableFields ?: [];
+		} else {
+			args.batchEditableFields = dataManagerService.listBatchEditableFields( objectName );
+		}
+
+		if ( ArrayLen( args.batchEditableFields ) ) {
 			args.actions.append( renderView( view="/admin/datamanager/_batchEditMultiActionButton", args=args ) );
 		}
 
-		if ( IsTrue( prc.canDelete ) ) {
+		if ( IsTrue( args.canDelete ?: ( prc.canDelete ?: "" ) ) ) {
 			args.actions.append({
 				  class     = "btn-danger"
 				, label     = translateResource( uri="cms:datamanager.deleteSelected.title" )
@@ -148,14 +171,15 @@ component extends="preside.system.base.AdminHandler" {
 	}
 
 	public void function viewRecord( event, rc, prc ) {
-		var objectName    = prc.objectName ?: "";
-		var recordId      = prc.recordId   ?: ""
-		var version       = Val( prc.version ?: "" );
-		var language      = rc.language ?: "";
-		var canTranslate  = IsTrue( prc.canTranslate ?: "" );
-		var objectTitle   = prc.objectTitle ?: "";
-		var recordLabel   = prc.recordLabel ?: "";
-		var useVersioning = IsTrue( prc.useVersioning ?: "" );
+		var objectName      = prc.objectName ?: "";
+		var recordId        = prc.recordId   ?: ""
+		var version         = Val( prc.version ?: "" );
+		var language        = rc.language     ?: "";
+		var objectTitle     = prc.objectTitle ?: "";
+		var recordLabel     = prc.recordLabel ?: "";
+		var canTranslate    = IsTrue( prc.canTranslate    ?: "" );
+		var useVersioning   = IsTrue( prc.useVersioning   ?: "" );
+		var canViewVersions = IsTrue( prc.canViewVersions ?: "" );
 
 		_checkPermission( argumentCollection=arguments, key="read", object=objectName );
 
@@ -174,7 +198,7 @@ component extends="preside.system.base.AdminHandler" {
 			version = rc.version = prc.version = Val( url.version ?: "" );
 		}
 
-		if ( useVersioning ) {
+		if ( useVersioning && canViewVersions ) {
 			prc.versionNavigator = customizationService.runCustomization(
 				  objectName     = objectName
 				, action         = "versionNavigator"
@@ -410,7 +434,7 @@ component extends="preside.system.base.AdminHandler" {
 		switch( action ){
 			case "batchUpdate":
 				setNextEvent(
-					  url           = event.buildAdminLink( linkTo="datamanager.batchEditField", queryString="object=#objectName#&field=#( rc.field ?: '' )#" )
+					  url           = event.buildAdminLink( objectName=objectName, operation="batchEditField", queryString="field=#( rc.field ?: '' )#" )
 					, persistStruct = { id = ids }
 				);
 			break;
@@ -1495,10 +1519,11 @@ component extends="preside.system.base.AdminHandler" {
 		var hasRecordActionsCustomization = !actionsView.len() && customizationService.objectHasCustomization( objectName, "getRecordActionsForGridListing" );
 
 		if ( !actionsView.len() && !hasRecordActionsCustomization ) {
-			var canView           = IsTrue( prc.canView       ?: "" );
-			var canEdit           = IsTrue( prc.canEdit       ?: "" );
-			var canDelete         = IsTrue( prc.canDelete     ?: "" );
-			var canViewHistory    = IsTrue( prc.useVersioning ?: "" );
+			var canView           = IsTrue( prc.canView         ?: "" );
+			var canEdit           = IsTrue( prc.canEdit         ?: "" );
+			var canDelete         = IsTrue( prc.canDelete       ?: "" );
+			var canViewVersions   = IsTrue( prc.canViewVersions ?: "" );
+			var canViewHistory    = IsTrue( prc.useVersioning   ?: "" ) && canViewVersions;
 			var viewRecordLink    = canView        ? event.buildAdminLink( objectName=objectName, recordId="{id}" )                                                       : "";
 			var editRecordLink    = canEdit        ? event.buildAdminLink( objectName=objectName, recordId="{id}", operation="editRecord", args={ resultAction="grid" } ) : "";
 			var deleteRecordLink  = canDelete      ? event.buildAdminLink( objectName=objectName, recordId="{id}", operation="deleteRecordAction" )                       : "";
@@ -2920,6 +2945,7 @@ component extends="preside.system.base.AdminHandler" {
 			prc.canedit               = _checkPermission( argumentCollection=arguments, key="edit"              , throwOnError=false );
 			prc.canDelete             = _checkPermission( argumentCollection=arguments, key="delete"            , throwOnError=false );
 			prc.canManagePerms        = _checkPermission( argumentCollection=arguments, key="manageContextPerms", throwOnError=false );
+			prc.canViewVersions       = _checkPermission( argumentCollection=arguments, key="viewversions"      , throwOnError=false );
 			prc.canSort               = datamanagerService.isSortable( prc.objectName ) && prc.canEdit;
 			prc.gridFields            = _getObjectFieldsForGrid( prc.objectName );
 			prc.hiddenGridFields      = _getObjectHiddenFieldsForGrid( prc.objectName );
@@ -3013,7 +3039,7 @@ component extends="preside.system.base.AdminHandler" {
 				, args           = args
 			);
 
-			if ( Len( Trim( args.recordId ?: "" ) ) ) {
+			if ( Len( Trim( args.recordId ?: "" ) ) && ListLen( args.recordId ) == 1 ) {
 				customizationService.runCustomization(
 					  objectName     = args.objectName
 					, action         = "recordBreadcrumb"
