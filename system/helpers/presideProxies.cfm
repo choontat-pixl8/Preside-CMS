@@ -265,7 +265,29 @@
 
 <!--- tasks --->
 	<cffunction name="createTask" access="public" returntype="any" output="false">
-		<cfreturn getSingleton( "adHocTaskManagerService" ).createTask( argumentCollection = arguments ) />
+		<cfreturn getSingleton( "adHocTaskManagerService" ).createTask( argumentCollection=arguments ) />
+	</cffunction>
+
+<!--- utils --->
+	<cffunction name="slugify" access="public" returntype="string" output="false">
+		<cfreturn getSingleton( "PresideObjectService" ).slugify( argumentCollection=arguments )>
+	</cffunction>
+
+<!--- datamanager --->
+	<cffunction name="objectDataTable" access="public" returntype="string" output="false">
+		<cfargument name="objectName" type="string" required="true" />
+		<cfargument name="args"       type="struct" required="false" default="#StructNew()#" />
+
+		<cfscript>
+			arguments.args.objectName = arguments.objectName;
+
+			return getSingleton( "dataManagerCustomizationService" ).runCustomization(
+				  objectName     = arguments.objectName
+				, args           = arguments.args
+				, action         = "listingViewlet"
+				, defaultHandler = "admin.DataManager._objectListingViewlet"
+			);
+		</cfscript>
 	</cffunction>
 
 <!--- helpers --->
