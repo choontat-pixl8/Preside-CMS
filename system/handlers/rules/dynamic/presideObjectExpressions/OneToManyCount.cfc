@@ -3,7 +3,7 @@
  * of records in a one-to-many relationship
  *
  */
-component {
+component extends="preside.system.base.AutoObjectExpressionHandler" {
 
 	property name="presideObjectService" inject="presideObjectService";
 	property name="filterService"        inject="rulesEngineFilterService";
@@ -68,6 +68,10 @@ component {
 		var filterSql     = "#subQueryAlias#.onetomany_count ${operator} :#paramName#";
 		var params        = { "#paramName#" = { value=arguments.value, type="cf_sql_number" } };
 
+		for( var extraFilter in subQueryExtraFilters ) {
+			params.append( extraFilter.filterParams ?: {} );
+		}
+
 		switch ( _numericOperator ) {
 			case "eq":
 				filterSql = filterSql.replace( "${operator}", "=" );
@@ -118,7 +122,7 @@ component {
 		);
 
 		if ( Len( Trim( parentPropertyName ) ) ) {
-			var parentPropNameTranslated = translateObjectProperty( parentObjectName, parentPropertyName, translateObjectName( objectName ) );
+			var parentPropNameTranslated = super._getExpressionPrefix( argumentCollection=arguments );
 			return translateResource( uri="rules.dynamicExpressions:related.oneToManyCount.label", data=[ relatedToTranslated, possesses, parentPropNameTranslated ] );
 		}
 
@@ -142,7 +146,7 @@ component {
 		);
 
 		if ( Len( Trim( parentPropertyName ) ) ) {
-			var parentPropNameTranslated = translateObjectProperty( parentObjectName, parentPropertyName, translateObjectName( objectName ) );
+			var parentPropNameTranslated = super._getExpressionPrefix( argumentCollection=arguments );
 			return translateResource( uri="rules.dynamicExpressions:related.oneToManyCount.text", data=[ relatedToTranslated, possesses, parentPropNameTranslated ] );
 		}
 

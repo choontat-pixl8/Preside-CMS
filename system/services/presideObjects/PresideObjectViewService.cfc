@@ -13,7 +13,7 @@ component displayName="Preside Object View Service" {
 	/**
 	 * @presideObjectService.inject   PresideObjectService
 	 * @presideContentRenderer.inject ContentRendererService
-	 * @coldboxRenderer.inject        coldbox:plugin:Renderer
+	 * @coldboxRenderer.inject        presideRenderer
 	 * @cacheProvider.inject          cachebox:PresideObjectViewCache
 	 * @cachebox.inject               cachebox
 	 */
@@ -71,7 +71,7 @@ component displayName="Preside Object View Service" {
 			var cacheKey = _generateCacheKey( argumentCollection=arguments );
 			var cached   = _getFromCache( cacheProvider=arguments.cacheProvider, cacheKey=cacheKey );
 
-			if ( !IsNull( cached ) ) {
+			if ( !IsNull( local.cached ) ) {
 				return cached;
 			}
 		}

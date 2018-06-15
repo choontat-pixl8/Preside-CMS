@@ -24,6 +24,7 @@ component {
 	 * @emailSendingContextService.inject emailSendingContextService
 	 * @emailStyleInliner.inject          emailStyleInliner
 	 * @assetManagerService.inject        assetManagerService
+	 * @emailSettings.inject              coldbox:setting:email
 	 *
 	 */
 	public any function init(
@@ -33,6 +34,7 @@ component {
 		, required any emailSendingContextService
 		, required any assetManagerService
 		, required any emailStyleInliner
+		, required any emailSettings
 	) {
 		_setSystemEmailTemplateService( arguments.systemEmailTemplateService );
 		_setEmailRecipientTypeService( arguments.emailRecipientTypeService );
@@ -40,6 +42,7 @@ component {
 		_setEmailSendingContextService( arguments.emailSendingContextService );
 		_setEmailStyleInliner( arguments.emailStyleInliner );
 		_setAssetManagerService( arguments.assetManagerService );
+		_setEmailSettings( arguments.emailSettings );
 
 		_ensureSystemTemplatesHaveDbEntries();
 
@@ -82,6 +85,8 @@ component {
 		_getEmailSendingContextService().setContext(
 			  recipientType = messageTemplate.recipient_type ?: ""
 			, recipientId   = arguments.recipientId
+			, templateId    = arguments.template
+			, template      = messageTemplate
 		);
 		try {
 			var params = Duplicate( arguments.parameters );
@@ -261,6 +266,54 @@ component {
 	}
 
 	/**
+	 * Returns a boolean defining whether email content for a system template should be
+	 * saved or not.
+	 *
+	 * @autodoc       true
+	 * @template.hint ID of the template whose content save setting you wish to get
+	 *
+	 */
+	public boolean function shouldSaveContentForTemplate( required string template ) {
+		var messageTemplate = getTemplate( id=arguments.template );
+
+		if ( messageTemplate.count() ) {
+			if ( _getSystemEmailTemplateService().templateExists( arguments.template ) ) {
+				return _getSystemEmailTemplateService().shouldSaveContentForTemplate( arguments.template );
+			}
+
+			if ( isBoolean( messageTemplate.save_content ) ) {
+				return messageTemplate.save_content;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * How many days the saved content of an email should be retained for. If not
+	 * specifically configured, will return the system default.
+	 *
+	 * @autodoc       true
+	 * @template.hint ID of the template whose content expiry setting you wish to get
+	 *
+	 */
+	public numeric function getSavedContentExpiry( required string template ) {
+		var defaultExpiry    = _getEmailSettings().defaultContentExpiry;
+		var messageTemplate  = getTemplate( id=arguments.template );
+		var configuredExpiry = "";
+
+		if ( messageTemplate.count() ) {
+			if ( _getSystemEmailTemplateService().templateExists( arguments.template ) ) {
+				configuredExpiry = _getSystemEmailTemplateService().getSavedContentExpiry( arguments.template );
+			} else {
+				configuredExpiry = messageTemplate.save_content_expiry;
+			}
+		}
+
+		return isNumeric( configuredExpiry ) ? configuredExpiry : defaultExpiry;
+	}
+
+	/**
 	 * Inserts or updates the given email template
 	 *
 	 * @autodoc  true
@@ -408,12 +461,13 @@ component {
 	) {
 		arguments.type = arguments.type == "text" ? "text" : "html";
 		var replaced = JavaCast( "String", arguments.text );
+		var Matcher  = CreateObject( "java", "java.util.regex.Matcher" );
 
 		for( var paramName in arguments.params ) {
 			var token = "(?i)\Q${#paramName#}\E";
 			var value = IsSimpleValue( arguments.params[ paramName ] ) ? arguments.params[ paramName ] : ( arguments.params[ paramName ][ arguments.type ] ?: "" );
 
-			replaced = replaced.replaceAll( token, value );
+			replaced = replaced.replaceAll( token, Matcher.quoteReplacement( value ) );
 		}
 
 		return replaced;
@@ -423,27 +477,32 @@ component {
 	 * Prepares params (for use in replacing tokens in subject and body)
 	 * for the given email template, recipient type and sending args.
 	 *
-	 * @autodoc       true
-	 * @template      ID of the template of the email that is being prepared
-	 * @recipientType ID of the recipient type of the email that is being prepared
-	 * @recipientId   ID of the recipient
-	 * @args          Structure of variables that are being used to send / prepare the email
+	 * @autodoc        true
+	 * @template       ID of the template of the email that is being prepared
+	 * @recipientType  ID of the recipient type of the email that is being prepared
+	 * @recipientId    ID of the recipient
+	 * @args           Structure of variables that are being used to send / prepare the email
+	 * @templateDetail Structure the template record
 	 */
 	public struct function prepareParameters(
 		  required string template
 		, required string recipientType
 		, required string recipientId
 		, required struct args
+		,          struct templateDetail = {}
 	) {
 		var params = _getEmailRecipientTypeService().prepareParameters(
-			  recipientType = arguments.recipientType
-			, recipientId   = arguments.recipientId
-			, args          = arguments.args
+			  recipientType  = arguments.recipientType
+			, recipientId    = arguments.recipientId
+			, args           = arguments.args
+			, template       = arguments.template
+			, templateDetail = arguments.templateDetail
 		);
 		if ( _getSystemEmailTemplateService().templateExists( arguments.template ) ) {
 			params.append( _getSystemEmailTemplateService().prepareParameters(
-				  template = arguments.template
-				, args     = arguments.args
+				  template       = arguments.template
+				, args           = arguments.args
+				, templateDetail = arguments.templateDetail
 			) );
 		}
 
@@ -472,6 +531,31 @@ component {
 		}
 
 		return params;
+	}
+
+	/**
+	 * Returns preview  params (for use in replacing tokens in subject and body)
+	 * for the given email template and recipient type.
+	 *
+	 * @autodoc       true
+	 * @template      ID of the template of the email that is being prepared
+	 * @logId         ID of the email template log entry
+	 * @originalArgs  The args originally used and stored in the template log
+	 */
+	public struct function rebuildArgsForResend(
+		  required string template
+		, required string logId
+		, required struct originalArgs
+	) {
+		if ( _getSystemEmailTemplateService().templateExists( arguments.template ) ) {
+			return _getSystemEmailTemplateService().rebuildArgsForResend(
+				  template     = arguments.template
+				, logId        = arguments.logId
+				, originalArgs = arguments.originalArgs
+			);
+		}
+
+		return arguments.originalArgs;
 	}
 
 	/**
@@ -537,7 +621,8 @@ component {
 	public array function listDueOneTimeScheduleTemplates() {
 		var records = $getPresideObject( "email_template" ).selectData(
 			  selectFields       = [ "id" ]
-			, filter             = { sending_method="scheduled", schedule_type="fixeddate", schedule_sent=false }
+			, filter             = "sending_method = :sending_method and schedule_type = :schedule_type and (schedule_sent is null or schedule_sent = :schedule_sent)"
+			, filterParams       = { sending_method="scheduled", schedule_type="fixeddate", schedule_sent=false }
 			, extraFilters       = [ { filter="schedule_date <= :schedule_date", filterParams={ schedule_date=_getNow() } } ]
 			, orderBy            = "schedule_date"
 			, allowDraftVersions = false
@@ -585,7 +670,7 @@ component {
 			var binary = assetManagerService.getAssetBinary( id=asset.id, throwOnMissing=false );
 			var type   = assetManagerService.getAssetType( name=asset.asset_type, throwOnMissing=false );
 
-			if ( !IsNull( binary ?: NullValue() ) ) {
+			if ( !IsNull( local.binary ) ) {
 				attachments.append({
 					  binary          = binary
 					, name            = asset.title & "." & ( type.extension ?: "" )
@@ -1009,5 +1094,12 @@ component {
 	}
 	private void function _setEmailStyleInliner( required any emailStyleInliner ) {
 		_emailStyleInliner = arguments.emailStyleInliner;
+	}
+
+	private any function _getEmailSettings() {
+		return _emailSettings;
+	}
+	private void function _setEmailSettings( required any emailSettings ) {
+		_emailSettings = arguments.emailSettings;
 	}
 }

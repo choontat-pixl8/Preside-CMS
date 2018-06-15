@@ -3,7 +3,7 @@
  * one-to-many relationships has any relationships
  *
  */
-component {
+component extends="preside.system.base.AutoObjectExpressionHandler" {
 
 	property name="presideObjectService" inject="presideObjectService";
 	property name="filterService"        inject="rulesEngineFilterService";
@@ -61,17 +61,17 @@ component {
 			, getSqlAndParamsOnly = true
 		);
 		var subQueryParams = {};
-		var subQueryAlias = "manyToManyCount" & CreateUUId().lCase().replace( "-", "", "all" );
-		var filterSql     = "#subQueryAlias#.onetomany_count ${operator} 0";
+		var subQueryAlias = "oneToManyHas" & CreateUUId().lCase().replace( "-", "", "all" );
+		var filterSql     = "";
 
 		for( var param in subQuery.params ) {
 			subQueryParams[ param.name ] = param;
 		}
 
 		if ( _is ) {
-			filterSql = filterSql.replace( "${operator}", ">" );
+			filterSql = "#subQueryAlias#.onetomany_count > 0";
 		} else {
-			filterSql = filterSql.replace( "${operator}", "=" );
+			filterSql = "( #subQueryAlias#.onetomany_count is null or #subQueryAlias#.onetomany_count = 0 )";
 		}
 
 		var prefix = filterPrefix.len() ? filterPrefix : ( parentPropertyName.len() ? parentPropertyName : objectName );
@@ -103,7 +103,7 @@ component {
 		);
 
 		if ( Len( Trim( parentPropertyName ) ) ) {
-			var parentPropNameTranslated = translateObjectProperty( parentObjectName, parentPropertyName, translateObjectName( objectName ) );
+			var parentPropNameTranslated = super._getExpressionPrefix( argumentCollection=arguments );
 			return translateResource( uri="rules.dynamicExpressions:related.oneToManyHas.label", data=[ relatedToTranslated, possesses, parentPropNameTranslated ] );
 		}
 
@@ -122,7 +122,7 @@ component {
 		var relatedToTranslated = translateResource( relatedToBaseUri & "title", relatedTo );
 
 		if ( Len( Trim( parentPropertyName ) ) ) {
-			var parentPropNameTranslated = translateObjectProperty( parentObjectName, parentPropertyName, translateObjectName( objectName ) );
+			var parentPropNameTranslated = super._getExpressionPrefix( argumentCollection=arguments );
 			return translateResource( uri="rules.dynamicExpressions:related.oneToManyHas.text", data=[ relatedToTranslated, parentPropNameTranslated ] );
 		}
 

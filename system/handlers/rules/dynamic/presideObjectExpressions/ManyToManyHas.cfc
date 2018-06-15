@@ -3,7 +3,7 @@
  * of records in a many-to-many relationship
  *
  */
-component {
+component extends="preside.system.base.AutoObjectExpressionHandler" {
 
 	property name="presideObjectService" inject="presideObjectService";
 	property name="filterService"        inject="rulesEngineFilterService";
@@ -58,9 +58,9 @@ component {
 			, getSqlAndParamsOnly = true
 		);
 
-		var subQueryAlias = "manyToManyCount" & CreateUUId().lCase().replace( "-", "", "all" );
+		var subQueryAlias = "manyToManyHas" & CreateUUId().lCase().replace( "-", "", "all" );
 		var paramName     = subQueryAlias;
-		var filterSql     = "#subQueryAlias#.manytomany_count ${operator} 0";
+		var filterSql     = "";
 		var params        = {};
 
 		for( var param in subQuery.params ) {
@@ -69,9 +69,9 @@ component {
 		}
 
 		if ( _possesses ) {
-			filterSql = filterSql.replace( "${operator}", ">" );
+			filterSql = "#subQueryAlias#.manytomany_count > 0";
 		} else {
-			filterSql = filterSql.replace( "${operator}", "=" );
+			filterSql = "( #subQueryAlias#.manytomany_count is null or #subQueryAlias#.manytomany_count = 0 )";
 		}
 
 		var prefix = filterPrefix.len() ? filterPrefix : ( parentPropertyName.len() ? parentPropertyName : objectName );
@@ -103,7 +103,7 @@ component {
 		);
 
 		if ( Len( Trim( parentPropertyName ) ) ) {
-			var parentPropNameTranslated = translateObjectProperty( parentObjectName, parentPropertyName, translateObjectName( objectName ) );
+			var parentPropNameTranslated = super._getExpressionPrefix( argumentCollection=arguments );
 			return translateResource( uri="rules.dynamicExpressions:related.manyToManyHas.label", data=[ objectNameTranslated, relatedToTranslated, parentPropNameTranslated, possesses ] );
 		}
 
@@ -123,7 +123,7 @@ component {
 		var relatedToTranslated  = translateResource( relatedToBaseUri & "title", relatedTo );
 
 		if ( Len( Trim( parentPropertyName ) ) ) {
-			var parentPropNameTranslated = translateObjectProperty( parentObjectName, parentPropertyName, translateObjectName( objectName ) );
+			var parentPropNameTranslated = super._getExpressionPrefix( argumentCollection=arguments );
 			return translateResource( uri="rules.dynamicExpressions:related.manyToManyHas.text", data=[ objectNameTranslated, relatedToTranslated, parentPropNameTranslated ] );
 		}
 

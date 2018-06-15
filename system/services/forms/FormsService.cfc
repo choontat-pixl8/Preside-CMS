@@ -11,7 +11,7 @@ component displayName="Forms service" {
 	 * @presideObjectService.inject      PresideObjectService
 	 * @siteService.inject               SiteService
 	 * @validationEngine.inject          ValidationEngine
-	 * @i18n.inject                      coldbox:plugin:i18n
+	 * @i18n.inject                      i18n
 	 * @coldbox.inject                   coldbox
 	 * @presideFieldRuleGenerator.inject PresideFieldRuleGenerator
 	 * @featureService.inject            featureService
@@ -370,7 +370,7 @@ component displayName="Forms service" {
 						} else if ( StructKeyExists( arguments.savedData, renderArgs.name ) ) {
 							renderArgs.defaultValue = arguments.savedData[ renderArgs.name ];
 						} else if ( StructKeyExists( field, "default" ) ) {
-							renderArgs.defaultValue = field.default;
+							renderArgs.defaultValue = _runDefaultValueFunction( field.sourceObject ?: "", field.default );
 						}
 
 						renderArgs.layout = field.layout ?: _formControlHasLayout( renderArgs.type ) ? arguments.fieldlayout : "";
@@ -546,6 +546,7 @@ component displayName="Forms service" {
 		,          string  fieldNameSuffix         = ""
 	) {
 		var ruleset = _getValidationRulesetFromFormName( argumentCollection=arguments );
+		var result  = arguments.preProcessData ? preProcessForm( argumentCollection = arguments ) : "";
 		var data    = Duplicate( arguments.formData );
 
 		// add active "site" id to form data, should unique indexes require checking against a specific site
@@ -555,7 +556,7 @@ component displayName="Forms service" {
 			return _getValidationEngine().validate(
 				  ruleset         = ruleset
 				, data            = data
-				, result          = preProcessForm( argumentCollection = arguments )
+				, result          = result
 				, ignoreMissing   = arguments.ignoreMissing
 				, fieldNamePrefix = arguments.fieldNamePrefix
 				, fieldNameSuffix = arguments.fieldNameSuffix
@@ -670,13 +671,13 @@ component displayName="Forms service" {
 	 * @createIfNotExists.hint Whether or not to create and register the form definition if it does not already exist.
 	 */
 	public string function getMergedFormName( required string formName, required any mergeWithFormName, boolean createIfNotExists=true ) {
-		var mergedName = formName;
+		var mergedName = _getSiteTemplatePrefix() & formName;
 
 		if ( !isArray( mergeWithFormName ) ) {
 			mergeWithFormName = [ mergeWithFormName ];
 		}
 		for( var formNameToMerge in mergeWithFormName ) {
-			mergedName &= ".merged.with." & formNameToMerge;
+			mergedName &= ".merged.with." & _getSiteTemplatePrefix() & formNameToMerge;
 		}
 
 		if ( createIfNotExists && !formExists( mergedName ) ) {
@@ -892,7 +893,8 @@ component displayName="Forms service" {
 		var formAttributes = {};
 
 		try {
-			xml = XmlParse( arguments.filePath );
+			var xmlContent = fileread( arguments.filePath, "utf-8" );
+			xml            = XmlParse( xmlContent );
 		} catch ( any e ) {
 			throw(
 				  type = "FormsService.BadFormXml"
@@ -1471,6 +1473,29 @@ component displayName="Forms service" {
 
 	private string function _generateFormNameFromDefinition( required struct definition ) {
 		return "dynamicform-" & LCase( Hash( SerializeJson( arguments.definition ) ) );
+	}
+
+	private string function _runDefaultValueFunction( required string objectName, required string default ) {
+		var defaultValue = arguments.default ?: "";
+
+		if ( ListLen( defaultValue, ":" ) > 1 ) {
+			switch( ListFirst( defaultValue, ":" ) ) {
+				case "cfml":
+					defaultValue = Evaluate( ListRest( defaultValue, ":" ) );
+				break;
+				case "closure":
+					var func = Evaluate( ListRest( defaultValue, ":" ) );
+					defaultValue = func( {} );
+				break;
+				case "method":
+					var obj = _getPresideObjectService().getObject( arguments.objectName );
+
+					defaultValue = obj[ ListRest( defaultValue, ":" ) ]( {} );
+				break;
+			}
+		}
+
+		return defaultValue ?: "";
 	}
 
 // GETTERS AND SETTERS

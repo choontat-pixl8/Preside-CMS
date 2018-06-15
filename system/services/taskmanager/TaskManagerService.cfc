@@ -19,6 +19,7 @@ component displayName="Task Manager Service" {
 	 * @logger.inject                     logbox:logger:taskmanager
 	 * @errorLogService.inject            errorLogService
 	 * @siteService.inject                siteService
+	 * @taskScheduler.inject              taskScheduler
 	 *
 	 */
 	public any function init(
@@ -31,6 +32,7 @@ component displayName="Task Manager Service" {
 		, required any logger
 		, required any errorLogService
 		, required any siteService
+		, required any taskScheduler
 	) {
 		_setConfiguredTasks( arguments.configWrapper.getConfiguredTasks() );
 		_setController( arguments.controller );
@@ -41,6 +43,8 @@ component displayName="Task Manager Service" {
 		_setLogger( arguments.logger );
 		_setErrorLogService( arguments.errorLogService );
 		_setSiteService( arguments.siteService );
+		_setMachineId();
+		_setTaskScheduler( arguments.taskScheduler );
 
 		_initialiseDb();
 
@@ -77,12 +81,16 @@ component displayName="Task Manager Service" {
 		var task        = getTask( arguments.taskKey );
 		var taskDetails = _getTaskDao().selectData(
 			  filter       = { task_key=arguments.taskKey }
-			, selectFields = [ "crontab_definition", "enabled" ]
+			, selectFields = [ "crontab_definition", "enabled", "timeout" ]
 		);
 
 		for( var t in taskDetails ) {
 			if ( !Len( Trim( t.crontab_definition ) ) ) {
 				t.crontab_definition = task.schedule;
+			}
+
+			if ( !Len( Trim( t.timeout ) ) ) {
+				t.timeout = task.timeout;
 			}
 
 			return t;
@@ -174,7 +182,7 @@ component displayName="Task Manager Service" {
 
 	public boolean function taskThreadIsRunning( required string taskKey ) {
 		var task = _getTaskDao().selectData(
-			  selectFields = [ "running_thread" ]
+			  selectFields = [ "running_thread", "running_machine" ]
 			, filter       = { task_key=arguments.taskKey }
 		);
 
@@ -182,10 +190,15 @@ component displayName="Task Manager Service" {
 			return false;
 		}
 
-		var runningStatuses = [ "RUNNING", "NOT_STARTED" ];
-		var threads         = _getCfThreadHelper().getRunningThreads();
+		if ( task.running_machine != _getMachineId() ) {
+			return true;
+		}
 
-		return runningStatuses.find( threads[ task.running_thread ].status ?: "" );
+		var threads      = _getCfThreadHelper().getRunningThreads();
+		var threadStatus = threads[ task.running_thread ].status ?: "";
+		var isRunning    = Len( Trim( threadStatus ) ) && threadStatus != "TERMINATED";
+
+		return isRunning;
 	}
 
 	public array function getRunnableTasks() {
@@ -229,10 +242,12 @@ component displayName="Task Manager Service" {
 	 *
 	 */
 	public void function runTask( required string taskKey, struct args={} ) {
-		var task        = getTask( arguments.taskKey );
-		var newThreadId = "PresideTaskmanagerTask-" & arguments.taskKey & "-" & CreateUUId();
-		var newLogId    = createTaskHistoryLog( arguments.taskKey, newThreadId );
-		var lockName    = "runtask-#taskKey#" & Hash( ExpandPath( "/" ) );
+		var task         = getTask( arguments.taskKey );
+		var taskConfig   = getTaskConfiguration( arguments.taskKey );
+			task.timeout = taskConfig.timeout;
+		var newThreadId  = "PresideTaskmanagerTask-" & arguments.taskKey & "-" & CreateUUId();
+		var newLogId     = createTaskHistoryLog( arguments.taskKey, newThreadId );
+		var lockName     = "runtask-#taskKey#" & Hash( ExpandPath( "/" ) );
 
 		lock name=lockName type="exclusive" timeout="1" {
 			transaction {
@@ -250,6 +265,7 @@ component displayName="Task Manager Service" {
 				var success = false;
 
 				try {
+					$getRequestContext().setUseQueryCache( false );
 					success = _getController().runEvent(
 						  event          = attributes.event
 						, private        = true
@@ -349,8 +365,14 @@ component displayName="Task Manager Service" {
 
 	public numeric function markTaskAsRunning( required string taskKey, required string threadId ) {
 		return _getTaskDao().updateData(
-			  data   = { is_running=true, next_run=getNextRunDate( arguments.taskKey ), run_expires=getTaskRunExpiry( arguments.taskKey ), running_thread = arguments.threadId }
-			, filter = { task_key = arguments.taskKey }
+			  filter = { task_key = arguments.taskKey }
+			, data   = {
+				  is_running      = true
+				, next_run        = getNextRunDate( arguments.taskKey )
+				, run_expires     = getTaskRunExpiry( arguments.taskKey )
+				, running_thread  = arguments.threadId
+				, running_machine = _getMachineId()
+			  }
 		);
 	}
 
@@ -367,6 +389,7 @@ component displayName="Task Manager Service" {
 				, last_run_time_taken  = arguments.timeTaken
 				, run_expires          = ""
 				, running_thread       = ""
+				, running_machine      = ""
 			  }
 		);
 
@@ -379,6 +402,7 @@ component displayName="Task Manager Service" {
 		return _getTaskHistoryDao().insertData( data={
 			  task_key   = arguments.taskKey
 			, thread_id  = arguments.threadId
+			, machine_id = _getMachineId()
 		} );
 	}
 
@@ -451,6 +475,7 @@ component displayName="Task Manager Service" {
 			, is_running         = false
 			, priority           = configuredTask.priority
 			, crontab_definition = configuredTask.schedule
+			, timeout            = configuredTask.timeout
 		} );
 	}
 
@@ -477,27 +502,34 @@ component displayName="Task Manager Service" {
 	}
 
 	public void function registerMasterScheduledTask() {
-		var settings = _getSystemConfigurationService().getCategorySettings( "taskmanager" );
-		var enabled  = IsBoolean( settings.scheduledtasks_enabled ?: "" ) && settings.scheduledtasks_enabled;
-		var action   = enabled ? "update" : "delete";
-		var args     = {};
-
-		args.task = "PresideTaskManager_" & LCase( Hash( GetCurrentTemplatePath() ) );
+		var settings  = _getSystemConfigurationService().getCategorySettings( "taskmanager" );
+		var enabled   = IsBoolean( settings.scheduledtasks_enabled ?: "" ) && settings.scheduledtasks_enabled;
+		var scheduler = _getTaskScheduler();
+		var task      = "PresideTaskManager_" & LCase( Hash( GetCurrentTemplatePath() ) );
 
 		if ( enabled ) {
-			args.url       = _getScheduledTaskUrl( settings.site_context ?: "" );
-			args.startdate = "1900-01-01";
-			args.startTime = "00:00:00";
-			args.interval  = "30";
+			scheduler.createTask(
+				  task          = task
+				, url           = _getScheduledTaskUrl( settings.site_context ?: "" )
+				, startdate     = "1900-01-01"
+				, startTime     = "00:00:00"
+				, interval      = "30"
+				, port          = Val( settings.http_port ?: "" ) ? settings.http_port : 80
+				, username      = settings.http_username  ?: ""
+				, password      = settings.http_password  ?: ""
+				, proxyServer   = settings.proxy_server   ?: ""
+				, proxyPort     = settings.proxy_port     ?: ""
+				, proxyUser     = settings.proxy_user     ?: ""
+				, proxyPassword = settings.proxy_password ?: ""
+			);
+		} else {
+			scheduler.deleteTask( task=task );
+		}
 
-			if ( cgi.server_port != 80 ) {
-				args.port = cgi.server_port;
-			}
-		};
-
-		schedule action=action attributeCollection=args;
-
-		_deleteOldTaskManagerScheduledTasks( args.task );
+		scheduler.deleteTasks(
+			  taskPattern   = "^PresideTaskManager_"
+			, preserveTasks = [ task ]
+		);
 	}
 
 	public array function getAllTaskDetails() {
@@ -585,9 +617,9 @@ component displayName="Task Manager Service" {
 	}
 
 	public date function getTaskRunExpiry( required string taskKey ) {
-		var task = getTask( arguments.taskKey );
+		var taskConfig = getTaskConfiguration( arguments.taskKey );
 
-		return DateAdd( "s", task.timeout, _getOperationDate() );
+		return DateAdd( "s", taskConfig.timeout, _getOperationDate() );
 	}
 
 	public string function createLogHtml( required string log, numeric fetchAfterLines=0 ) {
@@ -611,42 +643,46 @@ component displayName="Task Manager Service" {
 	public struct function getStats() {
 		var scheduleEnabled   = _getSystemConfigurationService().getSetting( "taskmanager", "scheduledtasks_enabled" );
 		var tasks             = _getTaskDao().selectData();
-		var taskHistory       = _getTaskHistoryDao().selectData();
+		var historyDao        = _getTaskHistoryDao();
 		var failureCount      = 0;
 		var successCount      = 0;
-		var totalTime         = 0;
-		var historicSuccesses = 0;
-		var historicFailures  = 0;
+		var disabledCount     = 0;
+		var neverRunCount     = 0;
 
 		for( var task in tasks ) {
 			if ( IsBoolean( task.was_last_run_success ?: "" ) ) {
 				if ( task.was_last_run_success ) {
 					successCount++;
+				} else if ( !task.enabled ) {
+					disabledCount++;
+				} else if ( !IsDate( task.last_ran ) ){
+					neverRunCount++;
 				} else {
 					failureCount++;
 				}
 			}
 		}
 
-		for( var log in taskHistory ) {
-			totalTime += Val( log.time_taken );
-			if ( IsBoolean( log.success ?: "" ) ) {
-				if ( log.success ) {
-					historicSuccesses++;
-				} else {
-					historicFailures++;
-				}
-			}
-		}
+		var history = historyDao.selectData( selectFields=[
+			  "Sum( time_taken ) as total_time_taken"
+			, "Avg( time_taken ) as avg_time_taken"
+			, "Count( id ) as total_count"
+		] );
+		var historySuccesses = historyDao.selectData(
+			  filter = { success = true }
+			, selectFields = [ "Count(*) as total" ]
+		);
 
 		return {
 			  "taskmanager.schedule.enabled" = ( IsBoolean( scheduleEnabled ) && scheduleEnabled ) ? 1 : 0
 			, "taskmanager.failure.count"    = failureCount
 			, "taskmanager.success.count"    = successCount
-			, "taskmanager.failure.perc"     = ( taskHistory.recordCount ? ( ( historicFailures  / taskHistory.recordCount ) * 100 ) : 0 )
-			, "taskmanager.success.perc"     = ( taskHistory.recordCount ? ( ( historicSuccesses / taskHistory.recordCount ) * 100 ) : 0 )
-			, "taskmanager.total.time"       = totalTime
-			, "taskmanager.avg.time"         = ( taskHistory.recordCount ? ( totalTime / taskHistory.recordCount ) : 0 )
+			, "taskmanager.disabled.count"   = disabledCount
+			, "taskmanager.neverrun.count"   = neverRunCount
+			, "taskmanager.failure.perc"     = ( history.total_count ? ( ( ( history.total_count-historySuccesses.total ) / history.total_count ) * 100 ) : 0 )
+			, "taskmanager.success.perc"     = ( history.total_count ? ( ( historySuccesses.total / history.total_count ) * 100 ) : 0 )
+			, "taskmanager.total.time"       = Val( history.total_time_taken )
+			, "taskmanager.avg.time"         = Val( history.avg_time_taken )
 		};
 	}
 
@@ -703,19 +739,6 @@ component displayName="Task Manager Service" {
 			, "/preside/system/services/taskmanager/lib/joda-time-2.9.4.jar"
 			, "/preside/system/services/taskmanager/lib/cron-1.0.jar"
 		];
-	}
-
-	private void function _deleteOldTaskManagerScheduledTasks( required string validTaskName ) {
-		var tasks       = "";
-		var taskPattern = "^PresideTaskManager_";
-
-		schedule action="list" returnvariable="tasks";
-
-		for( var task in tasks ) {
-			if ( task.task != arguments.validTaskName && task.task.reFindNoCase( taskPattern ) ) {
-				schedule action="delete" task=task.task;
-			}
-		}
 	}
 
 // GETTERS AND SETTERS
@@ -786,6 +809,22 @@ component displayName="Task Manager Service" {
 	}
 	private void function _setSiteService( required any siteService ) {
 		_siteService = arguments.siteService;
+	}
+
+	private string function _getMachineId() {
+		return _machineId;
+	}
+	private void function _setMachineId() {
+		var localHost = CreateObject("java", "java.net.InetAddress").getLocalHost();
+
+		_machineId = Left( localHost.getHostAddress() & "-" & localHost.getHostName(), 255 );
+	}
+
+	private any function _getTaskScheduler() {
+		return _taskScheduler;
+	}
+	private void function _setTaskScheduler( required any taskScheduler ) {
+		_taskScheduler = arguments.taskScheduler;
 	}
 
 }

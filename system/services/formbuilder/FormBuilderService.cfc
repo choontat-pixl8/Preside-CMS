@@ -17,6 +17,8 @@ component {
 	 * @validationEngine.inject             validationEngine
 	 * @recaptchaService.inject             recaptchaService
 	 * @spreadsheetLib.inject               spreadsheetLib
+	 * @presideObjectService.inject         presideObjectService
+	 * @rulesEngineFilterService.inject     rulesEngineFilterService
 	 *
 	 */
 	public any function init(
@@ -28,6 +30,8 @@ component {
 		, required any validationEngine
 		, required any recaptchaService
 		, required any spreadsheetLib
+		, required any presideObjectService
+		, required any rulesEngineFilterService
 	) {
 		_setItemTypesService( arguments.itemTypesService );
 		_setActionsService( arguments.actionsService );
@@ -37,6 +41,8 @@ component {
 		_setValidationEngine( arguments.validationEngine );
 		_setRecaptchaService( arguments.recaptchaService );
 		_setSpreadsheetLib( arguments.spreadsheetLib );
+		_setPresideObjectService( arguments.presideObjectService );
+		_setRulesEngineFilterService( arguments.rulesEngineFilterService );
 
 		return this;
 	}
@@ -565,7 +571,7 @@ component {
 					, itemConfiguration = item.configuration
 				);
 
-				if ( !IsNull( itemValue ) ) {
+				if ( !IsNull( local.itemValue ) ) {
 					formData[ itemName ] = itemValue;
 				}
 			}
@@ -733,10 +739,11 @@ component {
 	 */
 	public struct function getSubmissionsForGridListing(
 		  required string  formId
-		,          numeric startRow     = 1
-		,          numeric maxRows      = 10
-		,          string  orderBy      = ""
-		,          string  searchQuery  = ""
+		,          numeric startRow              = 1
+		,          numeric maxRows               = 10
+		,          string  orderBy               = ""
+		,          string  searchQuery           = ""
+		,          string  savedFilterExpIdLists = ""
 	) {
 		var submissionsDao = $getPresideObject( "formbuilder_formsubmission" );
 		var result         = { totalRecords=0, records="" };
@@ -769,6 +776,21 @@ component {
 				  filter       = "submitted_by.display_name like :q or formbuilder_formsubmission.form_instance like :q or formbuilder_formsubmission.submitted_data like :q"
 				, filterParams = { q = { type="cf_sql_varchar", value="%#arguments.searchQuery#%" } }
 			});
+		}
+
+		if ( Len( Trim( arguments.savedFilterExpIdLists ?: "" ) ) ) {
+			var savedFilters = _getPresideObjectService().selectData(
+				  objectName   = "rules_engine_condition"
+				, selectFields = [ "expressions" ]
+				, filter       = { id=ListToArray( arguments.savedFilterExpIdLists ?: "" ) }
+			);
+
+			for( var filter in savedFilters ) {
+				extraFilters.append( _getRulesEngineFilterService().prepareFilter(
+					  objectName      = 'formbuilder_formsubmission'
+					, expressionArray = DeSerializeJson( filter.expressions )
+				) );
+			}
 		}
 
 		result.records = submissionsDao.selectData(
@@ -815,29 +837,46 @@ component {
 	 * Exports the responses to the given form to an excel spreadsheet. Returns
 	 * a workbook object (see [[spreadsheets]]).
 	 *
-	 * @autodoc
-	 * @formid.hint ID of the form you wish to produce spreadsheet for
+	 * @autodoc     true
+	 * @formid      ID of the form you wish to produce spreadsheet for
+	 * @writeToFile Whether or not to write output to file. If true, output is written to file and the file path is returned. If false, workbook object is returned.
+	 * @logger      Logger for background task export logging
+	 * @progress    Progress reporter object for background task progress reporting
 	 *
 	 */
-	public any function exportResponsesToExcel( required string formId ) {
+	public any function exportResponsesToExcel(
+		  required string  formId
+		,          boolean writeToFile = false
+		,          any     logger
+		,          any     progress
+	) {
 		var formDefinition = getForm( arguments.formId );
 
 		if ( !formDefinition.recordCount ) {
+			if ( canReportProgress ) {
+				throw( type="formbuilder.form.not.found", message="The form with the ID, [#arguments.formId#], could not be found" );
+			}
 			return;
 		}
 
-		var renderingService = _getFormBuilderRenderingService();
-		var formItems        = getFormItems( arguments.formId );
-		var spreadsheetLib   = _getSpreadsheetLib();
-		var workbook         = spreadsheetLib.new();
-		var headers          = [ "Submission ID", "Submission date", "Submitted by logged in user", "Form instance ID" ];
-		var itemColumnMap    = {};
-		var itemsToRender    = [];
-		var submissions      = $getPresideObject( "formbuilder_formsubmission" ).selectData(
+		var canLog            = arguments.keyExists( "logger" );
+		var canInfo           = canLog && logger.canInfo();
+		var canReportProgress = arguments.keyExists( "progress" );
+		var renderingService  = _getFormBuilderRenderingService();
+		var formItems         = getFormItems( arguments.formId );
+		var spreadsheetLib    = _getSpreadsheetLib();
+		var workbook          = spreadsheetLib.new();
+		var headers           = [ "Submission ID", "Submission date", "Submitted by logged in user", "Form instance ID" ];
+		var itemColumnMap     = {};
+		var itemsToRender     = [];
+		var submissions       = $getPresideObject( "formbuilder_formsubmission" ).selectData(
 			  filter  = { form = arguments.formId }
 			, orderBy = "datecreated"
 		);
 
+		if ( canInfo ) {
+			logger.info( "Fetched [#NumberFormat( submissions.recordcount )#] submissions, preparing to export..." );
+		}
 		for( var i=1; i <= formItems.len(); i++ ) {
 			if ( formItems[i].type.isFormField ) {
 				var columns = renderingService.getItemTypeExportColumns( formItems[i].type.id, formItems[i].configuration );
@@ -893,6 +932,18 @@ component {
 
 			spreadsheetLib.setCellValue( workbook, submission.ip_address, row, ++column, "string" );
 			spreadsheetLib.setCellValue( workbook, submission.user_agent, row, ++column, "string" );
+
+			if ( !row mod 100 && ( canInfo || canReportProgress ) ) {
+				if ( canReportProgress ) {
+					if ( progress.isCancelled() ) {
+						abort;
+					}
+					progress.setProgress( ( 100 / submissions.recordCount ) * row );
+				}
+				if ( canInfo ) {
+					logger.info( "Processed [#NumberFormat( row )#] of [#NumberFormat( submissions.recordCount )#] records..." );
+				}
+			}
 		}
 
 		spreadsheetLib.formatRow( workbook, { bold=true }, 1 );
@@ -901,6 +952,24 @@ component {
 			spreadsheetLib.autoSizeColumn( workbook, i );
 		}
 
+		if ( canReportProgress ) {
+			progress.setProgress( 100 );
+		}
+
+		if ( arguments.writeToFile ) {
+			var tmpFile = getTempDirectory() & "/FormBuilderExport" & CreateUUId() & ".xls";
+			spreadsheetLib.write( workbook, tmpFile, false );
+
+			if ( canReportProgress ) {
+				progress.setResult( {
+					  filePath       = tmpFile
+					, exportFileName = LCase( ReReplace( formDefinition.name, "[\W]", "_", "all" ) ) & "_" & DateTimeFormat( Now(), "yyyymmdd_HHnn" ) & ".xls"
+					, mimetype       = "application/msexcel"
+				} );
+			}
+
+			return tmpFile;
+		}
 		return workbook;
 	}
 
@@ -1070,5 +1139,19 @@ component {
 	}
 	private void function _setSpreadsheetLib( required any spreadsheetLib ) {
 		_spreadsheetLib = arguments.spreadsheetLib;
+	}
+
+	private any function _getPresideObjectService() {
+		return _presideObjectService;
+	}
+	private void function _setPresideObjectService( required any presideObjectService ) {
+		_presideObjectService = arguments.presideObjectService;
+	}
+
+	private any function _getRulesEngineFilterService() {
+		return _rulesEngineFilterService;
+	}
+	private void function _setRulesEngineFilterService( required any rulesEngineFilterService ) {
+		_rulesEngineFilterService = arguments.rulesEngineFilterService;
 	}
 }

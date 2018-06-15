@@ -217,6 +217,23 @@ component extends="resources.HelperObjects.PresideBddTestCase" {
 				expect( orderedExpressionLabels ).toBe( labels.sort( "textnocase" ) );
 			} );
 
+			it( "should return expressions from the cache if found", function(){
+				var service = _getService();
+				var expressionIds = mockExpressions.keyArray();
+				var labels = [];
+				var cacheEntry = [ "value_from_cache" ];
+
+				for( var id in expressionIds ){
+					labels.append( CreateUUId() );
+					service.$( "getExpression" ).$args( id ).$results( { id=id, label=labels[ labels.len() ], text="whatever", fields={}, contexts=[] } );
+				}
+				mockExpressionCache.$( "get" ).$results( cacheEntry );
+
+				var expressions = service.listExpressions();
+
+				expect( expressions ).toBe( cacheEntry );
+			} );
+
 			it( "should filter expressions by context when a context is supplied, with 'global' context matching any context", function(){
 				var service = _getService();
 				var context = "request";
@@ -330,26 +347,26 @@ component extends="resources.HelperObjects.PresideBddTestCase" {
 				) ).toBeTrue();
 			} );
 
-			it( "should throw an informative error when the expression does not exist", function(){
+			it( "should return false and raise an informative error when the expression does not exist", function(){
 				var service      = _getService();
 				var expressionId = "non.existant";
 				var errorThrown  = false;
 
-				try {
-					service.evaluateExpression(
-						  expressionId     = expressionId
-						, context          = "whatev"
-						, payload          = {}
-						, configuredFields = {}
-					);
+				service.$( "$raiseError" );
 
-				} catch( "preside.rule.expression.not.found" e ) {
-					errorThrown = true;
-					expect( e.message ).toBe( "The expression [#expressionId#] could not be found." );
+				expect( service.evaluateExpression(
+					  expressionId     = expressionId
+					, context          = "whatev"
+					, payload          = {}
+					, configuredFields = {}
+				) ).toBe( false );
 
-				} catch( any e ) {
-					fail( "An unexpected error was thrown, rather than a controlled error" );
-				}
+				var callLog = service.$callLog().$raiseError;
+
+				expect( callLog.len() ).toBe( 1 );
+				var error = callLog[ 1 ][ 1 ] ?: {};
+				expect( error.type ?: "" ).toBe( "preside.rule.expression.not.found" );
+				expect( error.message ?: "" ).toBe( "The expression [#expressionId#] could not be found." );
 			} );
 
 			it( "should throw an informative error when the expression does not support the given context", function(){
@@ -749,15 +766,23 @@ component extends="resources.HelperObjects.PresideBddTestCase" {
 		variables.mockFieldTypeService  = CreateEmptyMock( "preside.system.services.rulesEngine.RulesEngineFieldTypeService" );
 		variables.mockContextService    = CreateEmptyMock( "preside.system.services.rulesEngine.RulesEngineContextService" );
 		variables.mockDirectories       = [ "/dir1/expressions", "/dir2/expressions", "/dir3/expressions" ];
+		variables.mockExpressionCache   = createStub();
+		variables.mockI18n              = createStub();
 		variables.mockExpressions       = arguments.expressions;
 		variables.mockColdboxController = CreateStub();
 		mockReaderService.$( "getExpressionsFromDirectories" ).$args( mockDirectories ).$results( mockExpressions );
+		mockI18n.$( "getFWLanguageCode" ).$results( "en" );
+		mockI18n.$( "getFWCountryCode" ).$results( "" );
+		mockExpressionCache.$( "get" ).$results( nullValue() );
+		mockExpressionCache.$( "set" ).$results( nullValue() );
 
 		var service = new preside.system.services.rulesEngine.RulesEngineExpressionService(
 			  expressionReaderService    = mockReaderService
 			, contextService             = mockContextService
 			, fieldTypeService           = mockFieldTypeService
 			, expressionDirectories      = mockDirectories
+			, rulesEngineExpressionCache = mockExpressionCache
+			, i18n                       = mockI18n
 		);
 
 		service = createMock( object=service );
